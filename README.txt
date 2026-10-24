@@ -1,4 +1,10 @@
-التشغيل: ثبّت Node.js ثم داخل المجلد:  node server.js   وافتح http://localhost:3000
-حساب الأدمن:  admin  /  MagicCity@2026!x   (غيّر ADMIN_PASS بأعلى server.js قبل أي رفع)
-الملفات: logins.log = سجل الدخول | data.json = الحسابات والمنتجات والمفاتيح
-ضع في public/: logo.png و hero.jpg لصور الشعار والخلفية. عدّل SERVER_CONNECT في app.js لـ IP سيرفرك.
+نسخة GitHub Pages (ثابتة) + قاعدة بيانات Supabase المجانية
+1) supabase.com > New project
+2) SQL Editor > الصق محتوى supabase.sql > Run
+3) Authentication > Providers > Email > عطّل "Confirm email"
+4) Project Settings > API: انسخ Project URL و anon public key وضعهم في config.js
+5) ارفع الملفات لـ repo على GitHub > Settings > Pages > Deploy from branch (main / root)
+6) افتح موقعك، أنشئ حسابك (اسم إنجليزي)، ثم من Supabase SQL Editor شغّل:
+   update profiles set role='admin' where username='اسمك';
+   سوّيها فوراً قبل ما أحد غيرك يسجّل. (لا يوجد حساب admin جاهز؛ كلمة السر من اختيارك)
+تسجيلات الدخول محفوظة في جدول login_logs وتظهر في لوحة الأدمن (وزر تحميل).

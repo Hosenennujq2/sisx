@@ -1,6 +1,7 @@
 // ===== إعدادات =====
 const SERVER_CONNECT = 'fivem://connect/127.0.0.1:30120'; // غيّر الـ IP لسيرفرك
 const CATS = ['الايديات','الحزم','العصابات','منتجات مميزة'];
+const ICON={'الايديات':'🪪','الحزم':'📦','العصابات':'🕶️','منتجات مميزة':'⭐'};
 const PAGES = {
   about:['عن السيرفر','اكتب هنا نبذة عن سيرفرك.'],
   events:['الفعاليات','اكتب هنا الفعاليات القادمة.'],
@@ -12,11 +13,52 @@ const $=s=>document.querySelector(s), view=$('#view');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>Number(n).toFixed(2).replace('.',',')+' ₪';
 const fmt=t=>new Date(t).toLocaleString('ar');
-async function api(p,b){
-  const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.error||'خطأ');return d;
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+const mail=u=>String(u||'').trim().toLowerCase()+'@users.nova.app';
+const E=e=>{if(e)throw new Error(e.message)};
+async function me(){
+  const {data:{session}}=await sb.auth.getSession();if(!session)return null;
+  const {data:p}=await sb.from('profiles').select('*').eq('id',session.user.id).single();if(!p)return null;
+  const {data:inv}=await sb.from('inventory').select('*').eq('user_id',p.id).order('created_at');
+  return {id:p.id,username:p.username,fivemId:p.fivem_id||'',balance:+p.balance,role:p.role,inventory:(inv||[]).map(i=>({product:i.product_name,via:i.via,date:i.created_at}))};
 }
+async function api(p,b){
+  b=b||{};
+  switch(p){
+    case 'register':{const u=String(b.username||'').trim().toLowerCase();
+      if(!/^[a-z0-9_]{3,20}$/.test(u))throw new Error('اسم المستخدم: حروف إنجليزية وأرقام فقط (3-20)');
+      if(String(b.password||'').length<6)throw new Error('كلمة السر 6 أحرف على الأقل');
+      const {data,error}=await sb.auth.signUp({email:mail(u),password:b.password,options:{data:{username:u,fivem_id:b.fivemId||''}}});
+      if(error)throw new Error(/database|already/i.test(error.message)?'الاسم مستخدم':error.message);
+      if(!data.session)throw new Error('عطّل Confirm email من إعدادات Supabase');
+      await sb.rpc('log_login');return {user:await me()}}
+    case 'login':{const {error}=await sb.auth.signInWithPassword({email:mail(b.username),password:b.password||''});
+      if(error)throw new Error('بيانات غلط');await sb.rpc('log_login');return {user:await me()}}
+    case 'logout':await sb.auth.signOut();return {};
+    case 'me':return {user:await me()};
+    case 'fivemid':E((await sb.rpc('set_fivem_id',{t:b.fivemId||''})).error);return {user:await me()};
+    case 'products':{const {data,error}=await sb.from('products').select('*').order('created_at',{ascending:false});E(error);
+      return {products:data.map(x=>({id:x.id,name:x.name,price:+x.price,desc:x.descr,cat:x.cat}))}}
+    case 'buy':E((await sb.rpc('buy_product',{pid:b.id})).error);return {user:await me()};
+    case 'redeem':{const r=await sb.rpc('redeem_key',{k:b.key||''});E(r.error);return {user:await me(),product:r.data}}
+    case 'admin/data':{
+      const [u,k,l,inv]=await Promise.all([sb.from('profiles').select('*').order('created_at'),sb.from('gift_keys').select('*').order('created_at'),
+        sb.from('login_logs').select('*').order('created_at',{ascending:false}).limit(200),sb.from('inventory').select('user_id')]);
+      [u,k,l,inv].forEach(x=>E(x.error));const pr=await api('products');
+      return {users:u.data.map(x=>({id:x.id,username:x.username,fivemId:x.fivem_id,balance:+x.balance,role:x.role,inventory:inv.data.filter(i=>i.user_id===x.id)})),
+        keys:k.data.map(x=>({code:x.code,product:x.product_name,usedBy:x.used_by_name,created:x.created_at})),products:pr.products,
+        log:l.data.map(x=>`${new Date(x.created_at).toISOString()} | ${x.username} | FiveM:${x.fivem_id||'-'}`)}}
+    case 'admin/product':E((await sb.from('products').insert({name:b.name,price:+b.price||0,cat:b.cat,descr:b.desc||''})).error);return {};
+    case 'admin/product/delete':E((await sb.from('products').delete().eq('id',b.id)).error);return {};
+    case 'admin/key':{const r=await sb.rpc('admin_create_keys',{pid:b.pid,qty:+b.qty||1});E(r.error);return {codes:r.data}}
+    case 'admin/key/delete':E((await sb.from('gift_keys').delete().eq('code',b.code)).error);return {};
+    case 'admin/balance':E((await sb.rpc('admin_add_balance',{uid:b.id,amt:+b.amount||0})).error);return {};
+    case 'admin/role':E((await sb.from('profiles').update({role:b.role}).eq('id',b.id)).error);return {};
+    case 'admin/give':E((await sb.rpc('admin_give',{uid:b.id,pid:b.pid})).error);return {};
+  }
+  throw new Error('غير معروف');
+}
+function exportLog(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+AD.log.join('\n')],{type:'text/plain'}));a.download='logins.txt';a.click()}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3000)}
 function modal(html){$('#modalBox').innerHTML=html;$('#modal').classList.add('open')}
 function closeModal(){$('#modal').classList.remove('open')}
@@ -81,7 +123,7 @@ document.addEventListener('click',e=>{
   const a=e.target.closest('[data-go],[data-cat]');if(!a)return;
   if(a.dataset.cat)go('cat/'+a.dataset.cat);else go(a.dataset.go);
 });
-function card(p){return `<div class="prod"><div class="im" style="${p.img?`background-image:url('${esc(p.img)}')`:''}"></div>
+function card(p){return `<div class="prod"><div class="im">${ICON[p.cat]||'🛒'}</div>
   <div class="bd"><b>${esc(p.name)}</b><span class="c">${esc(p.cat||'')}</span><span class="c">${esc(p.desc)}</span>
   <span class="pr">${money(p.price)}</span><button class="btn" onclick="buy('${p.id}')">شراء</button></div></div>`}
 async function buy(id){
@@ -94,11 +136,11 @@ async function route(){
   document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));
   products=(await api('products')).products;
   if(h==='home'){
-    view.innerHTML=`<section class="hero"><h1>مرحبًا بك في متجر سيرفر ماجيك سيتي!</h1>
-      <p>هنا تبدأ رحلتك داخل أقوى سيرفر واقعي عربي على فايف إم 🔥<br>متجرنا هو المنصة الرسمية لشراء كل ما تحتاجه داخل السيرفر — من الرتب المميزة، إلى السيارات النادرة، إلى الهويات الخاصة اللي تميزك بين اللاعبين!</p>
-      <p>🚀 نحن نهدف لتقديم تجربة لعب متكاملة وسلسة، مع نظام شراء آمن وسريع يخليك تبدأ المتعة فورًا بدون تعقيد.</p></section>
-      <div class="cats">${CATS.map(c=>`<a class="cat" data-cat="${c}"><div style="background-image:url('${esc(products.find(p=>p.cat===c&&p.img)?.img||'')}')"><span>${c}</span></div></a>`).join('')}</div>
-      <div class="sec-h"><h2>المنتجات الأكثر مبيعاً</h2><a class="btn" data-go="cat/all">عرض الجميع ‹</a></div>
+    view.innerHTML=`<section class="hero"><span class="badge">متجر السيرفر الرسمي</span><h1>ابدأ رحلتك في <em>نوفا سيتي</em></h1>
+      <p>رتب، سيارات نادرة، ايديات وحزم حصرية. شراء آمن وسريع، وفعّل هداياك بمفتاح واحد.</p>
+      <div class="hero-btns"><a class="btn" data-go="cat/all">تصفح المتجر</a><a class="btn ghost" href="${SERVER_CONNECT}">▶ فوت السيرفر</a></div></section>
+      <div class="cats">${CATS.map(c=>`<a class="cat" data-cat="${c}"><i>${ICON[c]}</i><span>${c}</span></a>`).join('')}</div>
+      <div class="sec-h"><h2>أحدث المنتجات</h2><a class="btn" data-go="cat/all">عرض الجميع ‹</a></div>
       <div class="grid">${products.slice(0,8).map(card).join('')}</div>`;
   }else if(h.startsWith('cat/')){
     const c=h.slice(4),list=c==='all'?products:products.filter(p=>p.cat===c);
@@ -122,7 +164,7 @@ async function adminView(tab){
   let body='';
   const opts=AD.products.map(p=>`<option value="${p.id}">${esc(p.name)} (${money(p.price)})</option>`).join('');
   if(tab==='products')body=`<div class="panel"><h3>إضافة منتج</h3><div class="row"><input id="n_name" placeholder="الاسم"><input id="n_price" type="number" placeholder="السعر"><select id="n_cat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></div>
-    <div class="row"><input id="n_desc" placeholder="الوصف"><input id="n_img" placeholder="رابط الصورة (اختياري)"></div><button class="btn" onclick="addProduct()">إضافة</button></div>
+    <div class="row"><input id="n_desc" placeholder="الوصف"></div><button class="btn" onclick="addProduct()">إضافة</button></div>
     <div class="panel scroll"><table><tr><th>المنتج</th><th>القسم</th><th>السعر</th><th></th></tr>${AD.products.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.cat)}</td><td>${money(p.price)}</td><td><button class="btn dark" onclick="adm('product/delete',{id:'${p.id}'},'products')">حذف</button></td></tr>`).join('')}</table></div>`;
   if(tab==='keys')body=`<div class="panel"><h3>🎁 إنشاء مفتاح هدية</h3><div class="row"><select id="g_pid">${opts}</select><input id="g_qty" type="number" min="1" max="50" value="1" placeholder="العدد"></div>
     <button class="btn" onclick="genKey()">إنشاء المفتاح</button><div id="g_out" style="margin-top:12px"></div></div>
@@ -130,11 +172,11 @@ async function adminView(tab){
   if(tab==='users')body=`<div class="panel scroll"><table><tr><th>المستخدم</th><th>FiveM ID</th><th>الرصيد</th><th>الصلاحية</th><th>مشتريات</th><th>إجراءات</th></tr>${AD.users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.fivemId||'-')}</td><td>${money(u.balance)}</td><td>${u.role==='admin'?'أدمن':'عضو'}</td><td>${u.inventory.length}</td>
     <td><button class="btn dark" onclick="addBal('${u.id}')">+ رصيد</button> <button class="btn dark" onclick="adm('role',{id:'${u.id}',role:'${u.role==='admin'?'user':'admin'}'},'users')">${u.role==='admin'?'سحب أدمن':'ترقية أدمن'}</button>
     <select onchange="if(this.value){adm('give',{id:'${u.id}',pid:this.value},'users');}" style="width:auto"><option value="">إعطاء منتج…</option>${opts}</select></td></tr>`).join('')}</table></div>`;
-  if(tab==='log')body=`<div class="panel"><h3>سجل تسجيلات الدخول (محفوظ في logins.log)</h3><div class="log">${AD.log.map(esc).join('<br>')||'لا يوجد'}</div></div>`;
+  if(tab==='log')body=`<div class="panel"><h3>سجل تسجيلات الدخول <button class="btn dark" onclick="exportLog()">⬇ تحميل</button></h3><div class="log">${AD.log.map(esc).join('<br>')||'لا يوجد'}</div></div>`;
   view.innerHTML=`<h2 style="margin-bottom:14px">⚙ لوحة الأدمن</h2>${tabs}${body}`;
 }
 async function adm(p,b,tab){try{await api('admin/'+p,b);toast('تم');adminView(tab)}catch(e){toast(e.message)}}
-const addProduct=()=>adm('product',{name:$('#n_name').value,price:$('#n_price').value,cat:$('#n_cat').value,desc:$('#n_desc').value,img:$('#n_img').value},'products');
+const addProduct=()=>adm('product',{name:$('#n_name').value,price:$('#n_price').value,cat:$('#n_cat').value,desc:$('#n_desc').value},'products');
 const addBal=id=>{const a=prompt('المبلغ؟');if(a)adm('balance',{id,amount:a},'users')};
 async function genKey(){
   try{const d=await api('admin/key',{pid:$('#g_pid').value,qty:$('#g_qty').value});
