@@ -1,188 +1,97 @@
-// ===== إعدادات =====
-const SERVER_CONNECT = 'fivem://connect/127.0.0.1:30120'; // غيّر الـ IP لسيرفرك
-const CATS = ['الايديات','الحزم','العصابات','منتجات مميزة'];
-const ICON={'الايديات':'🪪','الحزم':'📦','العصابات':'🕶️','منتجات مميزة':'⭐'};
-const PAGES = {
-  about:['عن السيرفر','اكتب هنا نبذة عن سيرفرك.'],
-  events:['الفعاليات','اكتب هنا الفعاليات القادمة.'],
-  rules:['القوانين','اكتب هنا قوانين السيرفر.'],
-  terms:['الشروط والأحكام','اكتب هنا شروط وأحكام المتجر.']
-};
-let user=null, products=[];
-const $=s=>document.querySelector(s), view=$('#view');
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=n=>Number(n).toFixed(2).replace('.',',')+' ₪';
-const fmt=t=>new Date(t).toLocaleString('ar');
-const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
-const mail=u=>String(u||'').trim().toLowerCase()+'@users.nova.app';
-const E=e=>{if(e)throw new Error(e.message)};
-async function me(){
-  const {data:{session}}=await sb.auth.getSession();if(!session)return null;
-  const {data:p}=await sb.from('profiles').select('*').eq('id',session.user.id).single();if(!p)return null;
-  const {data:inv}=await sb.from('inventory').select('*').eq('user_id',p.id).order('created_at');
-  return {id:p.id,username:p.username,fivemId:p.fivem_id||'',balance:+p.balance,role:p.role,inventory:(inv||[]).map(i=>({product:i.product_name,via:i.via,date:i.created_at}))};
-}
-async function api(p,b){
-  b=b||{};
-  switch(p){
-    case 'register':{const u=String(b.username||'').trim().toLowerCase();
-      if(!/^[a-z0-9_]{3,20}$/.test(u))throw new Error('اسم المستخدم: حروف إنجليزية وأرقام فقط (3-20)');
-      if(String(b.password||'').length<6)throw new Error('كلمة السر 6 أحرف على الأقل');
-      const {data,error}=await sb.auth.signUp({email:mail(u),password:b.password,options:{data:{username:u,fivem_id:b.fivemId||''}}});
-      if(error)throw new Error(/database|already/i.test(error.message)?'الاسم مستخدم':error.message);
-      if(!data.session)throw new Error('عطّل Confirm email من إعدادات Supabase');
-      await sb.rpc('log_login');return {user:await me()}}
-    case 'login':{const {error}=await sb.auth.signInWithPassword({email:mail(b.username),password:b.password||''});
-      if(error)throw new Error('بيانات غلط');await sb.rpc('log_login');return {user:await me()}}
-    case 'logout':await sb.auth.signOut();return {};
-    case 'me':return {user:await me()};
-    case 'fivemid':E((await sb.rpc('set_fivem_id',{t:b.fivemId||''})).error);return {user:await me()};
-    case 'products':{const {data,error}=await sb.from('products').select('*').order('created_at',{ascending:false});E(error);
-      return {products:data.map(x=>({id:x.id,name:x.name,price:+x.price,desc:x.descr,cat:x.cat}))}}
-    case 'buy':E((await sb.rpc('buy_product',{pid:b.id})).error);return {user:await me()};
-    case 'redeem':{const r=await sb.rpc('redeem_key',{k:b.key||''});E(r.error);return {user:await me(),product:r.data}}
-    case 'admin/data':{
-      const [u,k,l,inv]=await Promise.all([sb.from('profiles').select('*').order('created_at'),sb.from('gift_keys').select('*').order('created_at'),
-        sb.from('login_logs').select('*').order('created_at',{ascending:false}).limit(200),sb.from('inventory').select('user_id')]);
-      [u,k,l,inv].forEach(x=>E(x.error));const pr=await api('products');
-      return {users:u.data.map(x=>({id:x.id,username:x.username,fivemId:x.fivem_id,balance:+x.balance,role:x.role,inventory:inv.data.filter(i=>i.user_id===x.id)})),
-        keys:k.data.map(x=>({code:x.code,product:x.product_name,usedBy:x.used_by_name,created:x.created_at})),products:pr.products,
-        log:l.data.map(x=>`${new Date(x.created_at).toISOString()} | ${x.username} | FiveM:${x.fivem_id||'-'}`)}}
-    case 'admin/product':E((await sb.from('products').insert({name:b.name,price:+b.price||0,cat:b.cat,descr:b.desc||''})).error);return {};
-    case 'admin/product/delete':E((await sb.from('products').delete().eq('id',b.id)).error);return {};
-    case 'admin/key':{const r=await sb.rpc('admin_create_keys',{pid:b.pid,qty:+b.qty||1});E(r.error);return {codes:r.data}}
-    case 'admin/key/delete':E((await sb.from('gift_keys').delete().eq('code',b.code)).error);return {};
-    case 'admin/balance':E((await sb.rpc('admin_add_balance',{uid:b.id,amt:+b.amount||0})).error);return {};
-    case 'admin/role':E((await sb.from('profiles').update({role:b.role}).eq('id',b.id)).error);return {};
-    case 'admin/give':E((await sb.rpc('admin_give',{uid:b.id,pid:b.pid})).error);return {};
-  }
-  throw new Error('غير معروف');
-}
-function exportLog(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+AD.log.join('\n')],{type:'text/plain'}));a.download='logins.txt';a.click()}
-function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3000)}
-function modal(html){$('#modalBox').innerHTML=html;$('#modal').classList.add('open')}
-function closeModal(){$('#modal').classList.remove('open')}
-$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
-$('#connectBtn').href=SERVER_CONNECT;
 
-// ===== المستخدم =====
-function renderUser(){
-  $('#balance').textContent=money(user?user.balance:0);
-  $('#adminLink').style.display=user&&user.role==='admin'?'':'none';
-  $('#userMenu').innerHTML=user
-    ?`<small>مسجل باسم: <b>${esc(user.username)}</b></small><small>ID: ${esc(user.fivemId||'غير محدد')}</small>
-      <a class="it" onclick="inventory()">📦 مشترياتي</a><a class="it" onclick="askId()">🆔 تغيير الايدي</a>
-      ${user.role==='admin'?'<a class="it" data-go="admin">⚙ لوحة الأدمن</a>':''}
-      <a class="it" onclick="logout()">🚪 تسجيل خروج</a>`
-    :`<a class="it" onclick="authModal('login')">تسجيل الدخول</a><a class="it" onclick="authModal('register')">إنشاء حساب</a>`;
-}
-function authModal(mode){
-  const reg=mode==='register';
-  modal(`<h3>${reg?'إنشاء حساب':'تسجيل الدخول'}</h3>
-    <input id="a_u" placeholder="اسم المستخدم"><input id="a_p" type="password" placeholder="كلمة السر">
-    ${reg?'<input id="a_id" placeholder="الايدي الخاص فيك (FiveM ID)">':''}
-    <button class="btn" onclick="doAuth('${mode}')">${reg?'إنشاء الحساب':'دخول'}</button>
-    <a style="color:#999" onclick="authModal('${reg?'login':'register'}')">${reg?'عندك حساب؟ سجّل دخول':'ما عندك حساب؟ أنشئ واحد'}</a>`);
-}
-async function doAuth(mode){
-  try{
-    const d=await api(mode,{username:$('#a_u').value,password:$('#a_p').value,fivemId:$('#a_id')?.value});
-    user=d.user;renderUser();closeModal();toast('أهلاً '+user.username);
-    if(!user.fivemId)askId();route();
-  }catch(e){toast(e.message)}
-}
-function askId(){
-  modal(`<h3>حط الايدي الخاص فيك</h3><p>يعطيك العافية بدنا نغلبك حطلنا الايدي تبعك</p>
-    <input id="f_id" placeholder="الايدي الخاص فيك" value="${esc(user.fivemId||'')}"><button class="btn" onclick="saveId()">حفظ</button>`);
-}
-async function saveId(){try{user=(await api('fivemid',{fivemId:$('#f_id').value})).user;renderUser();closeModal();toast('تم الحفظ')}catch(e){toast(e.message)}}
-async function logout(){await api('logout',{});user=null;renderUser();go('home');toast('تم تسجيل الخروج')}
-$('#userBtn').onclick=e=>{e.stopPropagation();$('#userMenu').classList.toggle('open')};
-document.addEventListener('click',()=>$('#userMenu').classList.remove('open'));
+const K='fv2',S='fv2s',TH={p:['#a855f7','#22d3ee'],r:['#ef4444','#f59e0b'],g:['#22c55e','#a3e635'],b:['#3b82f6','#ec4899']};
+const RR={common:'عادية',rare:'نادرة',epic:'ملحمية',legendary:'أسطورية'},RK=['مواطن','مقيم','محترف','نخبة','أسطورة'];
+const PZ=[10,25,100,5,50,15,200,20],WT=[20,18,4,25,10,18,1,14];
+const JB=[['🚓','الشرطة','حافظ على الأمن وطارد المجرمين'],['🚑','الإسعاف','أنقذ الأرواح داخل المدينة'],['🔧','الميكانيكي','أصلح وطوّر سيارات اللاعبين'],['🏪','التاجر','أدر متجرك واكسب الملايين'],['🕶️','العصابات','سيطر على الأحياء بذكاء'],['⚖️','القضاء','احكم بالعدل في المحكمة']];
+let db,me=null,page='home',tab='st',cpn=null,wr=0,ol=0,col='#22d3ee';
+const $=s=>document.querySelector(s),E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-// ===== مفاتيحك (تفعيل هدية) =====
-$('#keysBtn').onclick=()=>{
-  if(!user){toast('سجّل دخول أولاً');return authModal('login')}
-  modal(`<h3>🔑 تفعيل مفتاح هدية</h3><p>اكتب المفتاح اللي وصلك لتستلم المنتج</p>
-    <input id="k_in" placeholder="XXXX-XXXX-XXXX" style="direction:ltr;text-align:center"><button class="btn" onclick="redeem()">تفعيل</button>`);
-};
-async function redeem(){
-  try{const d=await api('redeem',{key:$('#k_in').value});user=d.user;renderUser();
-    modal(`<h3>🎉 مبروك!</h3><p>تم تفعيل المفتاح وربحت: <b>${esc(d.product)}</b></p><button class="btn" onclick="closeModal()">تمام</button>`)}
-  catch(e){toast(e.message)}
-}
-function inventory(){
-  modal(`<h3>📦 مشترياتي</h3>${user.inventory.length?`<div class="scroll"><table><tr><th>المنتج</th><th>الطريقة</th><th>التاريخ</th></tr>
-    ${user.inventory.map(i=>`<tr><td>${esc(i.product)}</td><td>${esc(i.via)}</td><td>${fmt(i.date)}</td></tr>`).join('')}</table></div>`:'<p>ما عندك مشتريات بعد</p>'}
-    <button class="btn dark" onclick="closeModal()">إغلاق</button>`);
-}
+const lvl=u=>Math.floor(Math.sqrt(u.xp/40))+1;
+const left=t=>{const m=Math.ceil((864e5-(Date.now()-t))/6e4);return Math.floor(m/60)+'س '+m%60+'د'};
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',2800)}
+function cop(t){try{navigator.clipboard.writeText(t)}catch(e){}toast('تم النسخ ✅')}
+function theme(t){const c=TH[t]||TH.p,r=document.documentElement.style;r.setProperty('--ac',c[0]);r.setProperty('--ac2',c[1]);col=c[1];try{localStorage.setItem('fv2t',t)}catch(e){}}
 
-// ===== التنقل =====
-function go(p){location.hash=p}
-document.addEventListener('click',e=>{
-  const a=e.target.closest('[data-go],[data-cat]');if(!a)return;
-  if(a.dataset.cat)go('cat/'+a.dataset.cat);else go(a.dataset.go);
-});
-function card(p){return `<div class="prod"><div class="im">${ICON[p.cat]||'🛒'}</div>
-  <div class="bd"><b>${esc(p.name)}</b><span class="c">${esc(p.cat||'')}</span><span class="c">${esc(p.desc)}</span>
-  <span class="pr">${money(p.price)}</span><button class="btn" onclick="buy('${p.id}')">شراء</button></div></div>`}
-async function buy(id){
-  if(!user){toast('سجّل دخول أولاً');return authModal('login')}
-  const p=products.find(x=>x.id===id);if(!confirm(`شراء ${p.name} بـ ${money(p.price)}؟`))return;
-  try{user=(await api('buy',{id})).user;renderUser();toast('تم الشراء ✅')}catch(e){toast(e.message)}
-}
-async function route(){
-  const h=decodeURIComponent(location.hash.slice(1))||'home';
-  document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));
-  products=(await api('products')).products;
-  if(h==='home'){
-    view.innerHTML=`<section class="hero"><span class="badge">متجر السيرفر الرسمي</span><h1>ابدأ رحلتك في <em>نوفا سيتي</em></h1>
-      <p>رتب، سيارات نادرة، ايديات وحزم حصرية. شراء آمن وسريع، وفعّل هداياك بمفتاح واحد.</p>
-      <div class="hero-btns"><a class="btn" data-go="cat/all">تصفح المتجر</a><a class="btn ghost" href="${SERVER_CONNECT}">▶ فوت السيرفر</a></div></section>
-      <div class="cats">${CATS.map(c=>`<a class="cat" data-cat="${c}"><i>${ICON[c]}</i><span>${c}</span></a>`).join('')}</div>
-      <div class="sec-h"><h2>أحدث المنتجات</h2><a class="btn" data-go="cat/all">عرض الجميع ‹</a></div>
-      <div class="grid">${products.slice(0,8).map(card).join('')}</div>`;
-  }else if(h.startsWith('cat/')){
-    const c=h.slice(4),list=c==='all'?products:products.filter(p=>p.cat===c);
-    view.innerHTML=`<div class="sec-h"><h2>${c==='all'?'كل المنتجات':esc(c)}</h2></div><div class="grid">${list.map(card).join('')||'<p>لا توجد منتجات</p>'}</div>`;
-  }else if(PAGES[h]){
-    view.innerHTML=`<div class="panel"><h2>${PAGES[h][0]}</h2><p class="page">${PAGES[h][1]}</p></div>`;
-  }else if(h==='admin'){
-    if(!user||user.role!=='admin'){view.innerHTML='<div class="panel">هذه الصفحة للأدمن فقط. سجّل دخول بحساب الأدمن.</div>';return}
-    adminView('products');
-  }
-  window.scrollTo(0,0);
-}
-window.addEventListener('hashchange',route);
+function fx(){const c=$('#bg'),x=c.getContext('2d');let w,h;const P=[],rs=()=>{w=c.width=innerWidth;h=c.height=innerHeight};rs();onresize=rs;
+ for(let i=0;i<55;i++)P.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.5,vy:(Math.random()-.5)*.5});
+ (function f(){x.clearRect(0,0,w,h);x.fillStyle=x.strokeStyle=col;P.forEach((p,i)=>{p.x+=p.vx;p.y+=p.vy;if(p.x<0||p.x>w)p.vx*=-1;if(p.y<0||p.y>h)p.vy*=-1;x.globalAlpha=.7;x.fillRect(p.x,p.y,2,2);
+ for(let j=i+1;j<P.length;j++){const q=P[j],d=Math.hypot(p.x-q.x,p.y-q.y);if(d<120){x.globalAlpha=(1-d/120)*.25;x.beginPath();x.moveTo(p.x,p.y);x.lineTo(q.x,q.y);x.stroke()}}});requestAnimationFrame(f)})()}
+function cnt(){document.querySelectorAll('[data-n]').forEach(e=>{const t=+e.dataset.n;let v=0;const s=Math.max(1,Math.ceil(t/30)),i=setInterval(()=>{v=Math.min(t,v+s);e.textContent=v;if(v>=t)clearInterval(i)},30)})}
+function go(p){page=p;render();scrollTo(0,0)}
+function nav(){const L=[['home','الرئيسية'],['store','المتجر'],['guide','الدليل'],['board','المتصدرين']];if(me){L.push(['account','حسابي']);if(me.role=='admin')L.push(['admin','الإدارة'])}
+ $('#nav').innerHTML=`<span class="lg">🎮 ${E(db.settings.name)}</span>`+L.map(([k,v])=>`<a class="${page==k?'on':''}" onclick="go('${k}')">${v}</a>`).join('')+(me?`<a onclick="out()">خروج</a><span class="co">🪙 ${me.coins}</span>`:`<a onclick="go('login')">دخول</a><a class="btn" onclick="go('reg')" style="padding:7px 14px">تسجيل</a>`)+Object.keys(TH).map(k=>`<i class="dt" style="background:${TH[k][0]}" onclick="theme('${k}')"></i>`).join('');
+ $('#tk').innerHTML='<span>'+db.news.slice(-5).reverse().map(n=>E(n.t)).join('  ✦  ')+'</span>';$('#ft').textContent='© '+db.settings.name+' — جميع الحقوق محفوظة'}
+function render(){nav();$('#app').innerHTML=({home,store,guide,board,account,admin,login,reg}[page]||home)();cnt()}
+function home(){const s=db.settings,ku=db.stats.keysUsed;
+ const F=[['⚡','أداء خرافي','سيرفر مستقر بدون لاج'],['💰','اقتصاد حقيقي','وظائف وأعمال وشركات'],['🚗','سيارات حصرية','مئات السيارات المعدّلة'],['🛡️','إدارة متواجدة','دعم على مدار الساعة'],['🎡','جوائز يومية','عجلة حظ ومكافآت'],['🏆','مستويات ورتب','تقدّم وتصدّر القائمة']];
+ return`<div class="w"><section class="hero"><div class="pill">السيرفر يعمل الآن</div><h1>${E(s.name)}</h1><p>${E(s.desc)}</p>
+ <div class="acts"><a class="btn" href="fivem://connect/cfx.re/join/${E(s.cfx)}">▶ ادخل السيرفر</a><button class="sec" onclick="cop('cfx.re/join/${E(s.cfx)}')">📋 نسخ الرابط</button><button class="sec" onclick="go('store')">🛒 المتجر</button><a class="btn sec" href="${E(s.discord)}" target="_blank" rel="noopener">💬 ديسكورد</a></div>
+ <div class="stats"><div class="card st"><b id="on">${ol}</b><span>لاعب متصل / ${s.slots}</span></div><div class="card st"><b data-n="${db.stats.users}">0</b><span>عضو مسجل</span></div><div class="card st"><b data-n="${ku}">0</b><span>حزمة مفعّلة</span></div><div class="card st"><b data-n="${db.packages.length}">0</b><span>حزمة بالمتجر</span></div></div></section>
+ <h2 style="margin-top:40px">✨ لماذا نحن؟</h2><div class="g">${F.map(f=>`<div class="card"><div style="font-size:34px">${f[0]}</div><h3>${f[1]}</h3><p class="mu">${f[2]}</p></div>`).join('')}</div>
+ <h2 style="margin-top:40px">📰 آخر الأخبار</h2><div class="g">${db.news.slice(-3).reverse().map(n=>`<div class="card nw"><h3>${E(n.t)}</h3><p class="mu">${E(n.b)}</p><small>${E(n.d)}</small></div>`).join('')}</div></div>`}
+function store(){return`<div class="w"><h2>🛒 المتجر<small>اشترِ بالعملات فوراً أو بالمال الحقيقي عبر الديسكورد</small></h2>
+ <div class="card" style="margin-bottom:18px"><div class="row"><input id="cc" placeholder="كوبون خصم" style="direction:ltr;margin:0"><button onclick="useCp()" style="flex:0 0 auto">تطبيق</button></div>${cpn?`<p class="mu" style="margin:8px 0 0">✅ خصم ${cpn.pct}% مفعّل</p>`:''}</div>
+ <div class="g">${db.packages.map(p=>{const c=cpn?Math.ceil(p.coins*(100-cpn.pct)/100):p.coins;return`<div class="card pk r-${p.rar}"><span class="bd">${RR[p.rar]}</span><h3 style="margin-top:8px">${E(p.name)}</h3><div class="pr">🪙 ${c}${cpn?`<span class="old">${p.coins}</span>`:''}</div><ul>${p.perks.split('\n').filter(x=>x.trim()).map(x=>`<li>${E(x)}</li>`).join('')}</ul>
+ <button onclick="buy(${p.id})" style="width:100%;margin-bottom:8px">شراء بالعملات</button><button class="sec" onclick="cash(${p.id})" style="width:100%">شراء نقدي (${E(p.price)})</button></div>`}).join('')}</div></div>`}
 
-// ===== لوحة الأدمن =====
-let AD=null;
-async function adminView(tab){
-  AD=await api('admin/data');
-  const T={products:'المنتجات',keys:'مفاتيح الهدايا',users:'المستخدمين',log:'سجل الدخول'};
-  const tabs=`<div class="tabs">${Object.entries(T).map(([k,v])=>`<button class="btn ${k===tab?'':'dark'}" onclick="adminView('${k}')">${v}</button>`).join('')}</div>`;
-  let body='';
-  const opts=AD.products.map(p=>`<option value="${p.id}">${esc(p.name)} (${money(p.price)})</option>`).join('');
-  if(tab==='products')body=`<div class="panel"><h3>إضافة منتج</h3><div class="row"><input id="n_name" placeholder="الاسم"><input id="n_price" type="number" placeholder="السعر"><select id="n_cat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></div>
-    <div class="row"><input id="n_desc" placeholder="الوصف"></div><button class="btn" onclick="addProduct()">إضافة</button></div>
-    <div class="panel scroll"><table><tr><th>المنتج</th><th>القسم</th><th>السعر</th><th></th></tr>${AD.products.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.cat)}</td><td>${money(p.price)}</td><td><button class="btn dark" onclick="adm('product/delete',{id:'${p.id}'},'products')">حذف</button></td></tr>`).join('')}</table></div>`;
-  if(tab==='keys')body=`<div class="panel"><h3>🎁 إنشاء مفتاح هدية</h3><div class="row"><select id="g_pid">${opts}</select><input id="g_qty" type="number" min="1" max="50" value="1" placeholder="العدد"></div>
-    <button class="btn" onclick="genKey()">إنشاء المفتاح</button><div id="g_out" style="margin-top:12px"></div></div>
-    <div class="panel scroll"><table><tr><th>المفتاح</th><th>المنتج</th><th>الحالة</th><th>التاريخ</th><th></th></tr>${AD.keys.slice().reverse().map(k=>`<tr><td><span class="key ${k.usedBy?'used':''}" onclick="navigator.clipboard.writeText('${k.code}');toast('تم النسخ')">${k.code}</span></td><td>${esc(k.product)}</td><td>${k.usedBy?'استخدمه: '+esc(k.usedBy):'🟢 غير مستخدم'}</td><td>${fmt(k.created)}</td><td><button class="btn dark" onclick="adm('key/delete',{code:'${k.code}'},'keys')">حذف</button></td></tr>`).join('')}</table></div>`;
-  if(tab==='users')body=`<div class="panel scroll"><table><tr><th>المستخدم</th><th>FiveM ID</th><th>الرصيد</th><th>الصلاحية</th><th>مشتريات</th><th>إجراءات</th></tr>${AD.users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.fivemId||'-')}</td><td>${money(u.balance)}</td><td>${u.role==='admin'?'أدمن':'عضو'}</td><td>${u.inventory.length}</td>
-    <td><button class="btn dark" onclick="addBal('${u.id}')">+ رصيد</button> <button class="btn dark" onclick="adm('role',{id:'${u.id}',role:'${u.role==='admin'?'user':'admin'}'},'users')">${u.role==='admin'?'سحب أدمن':'ترقية أدمن'}</button>
-    <select onchange="if(this.value){adm('give',{id:'${u.id}',pid:this.value},'users');}" style="width:auto"><option value="">إعطاء منتج…</option>${opts}</select></td></tr>`).join('')}</table></div>`;
-  if(tab==='log')body=`<div class="panel"><h3>سجل تسجيلات الدخول <button class="btn dark" onclick="exportLog()">⬇ تحميل</button></h3><div class="log">${AD.log.map(esc).join('<br>')||'لا يوجد'}</div></div>`;
-  view.innerHTML=`<h2 style="margin-bottom:14px">⚙ لوحة الأدمن</h2>${tabs}${body}`;
-}
-async function adm(p,b,tab){try{await api('admin/'+p,b);toast('تم');adminView(tab)}catch(e){toast(e.message)}}
-const addProduct=()=>adm('product',{name:$('#n_name').value,price:$('#n_price').value,cat:$('#n_cat').value,desc:$('#n_desc').value},'products');
-const addBal=id=>{const a=prompt('المبلغ؟');if(a)adm('balance',{id,amount:a},'users')};
-async function genKey(){
-  try{const d=await api('admin/key',{pid:$('#g_pid').value,qty:$('#g_qty').value});
-    const codes=d.codes;await adminView('keys');
-    $('#g_out').innerHTML='✅ انسخ وأرسل لصاحبك:<br>'+codes.map(c=>`<span class="key" onclick="navigator.clipboard.writeText('${c}');toast('تم النسخ')">${c}</span>`).join(' ');
-  }catch(e){toast(e.message)}
-}
 
-(async()=>{try{user=(await api('me')).user}catch{}renderUser();route()})();
+function cash(id){const p=db.packages.find(x=>x.id==id);if(!me){toast('سجّل دخولك أولاً');return go('login')}if(confirm(`للشراء النقدي تواصل مع الإدارة على ديسكورد لدفع «${p.name}» واستلام المفتاح. فتح الديسكورد؟`))window.open(db.settings.discord,'_blank','noopener')}
+function guide(){return`<div class="w"><h2>📜 قوانين السيرفر<small>اقرأها جيداً قبل الدخول</small></h2><div class="card"><ol class="rl">${db.settings.rules.split('\n').filter(x=>x.trim()).map(x=>`<li>${E(x)}</li>`).join('')}</ol></div>
+ <h2 style="margin-top:34px">💼 الوظائف المتاحة</h2><div class="g">${JB.map(j=>`<div class="card"><div style="font-size:38px">${j[0]}</div><h3>${j[1]}</h3><p class="mu">${j[2]}</p></div>`).join('')}</div></div>`}
+function board(){const U=[...db.users].sort((a,b)=>b.xp-a.xp).slice(0,10);return`<div class="w"><h2>🏆 قائمة المتصدرين<small>أعلى اللاعبين خبرة</small></h2><div class="card tb"><table><tr><th>#</th><th>اللاعب</th><th>الرتبة</th><th>المستوى</th><th>XP</th></tr>${U.map((u,i)=>`<tr><td>${['🥇','🥈','🥉'][i]||i+1}</td><td>${E(u.u)}</td><td>${RK[Math.min(4,Math.floor((lvl(u)-1)/3))]}</td><td>${lvl(u)}</td><td>${u.xp}</td></tr>`).join('')}</table></div></div>`}
+function login(){return`<div class="card box"><h2>تسجيل الدخول</h2><label>اسم المستخدم</label><input id="u"><label>كلمة المرور</label><input id="p" type="password" onkeydown="if(event.key=='Enter')doLogin()"><button onclick="doLogin()" style="width:100%">دخول</button></div>`}
+function reg(){return`<div class="card box"><h2>إنشاء حساب</h2><p class="mu">🎁 هدية تسجيل: 100 عملة</p><label>اسم المستخدم</label><input id="u"><label>كلمة المرور (6 أحرف فأكثر)</label><input id="p" type="password"><label>تأكيد كلمة المرور</label><input id="p2" type="password"><button onclick="doReg()" style="width:100%">تسجيل</button></div>`}
+
+
+
+function account(){if(!me)return login();wr=0;const l=lvl(me),b=(l-1)**2*40,nx=l*l*40,pc=Math.min(100,(me.xp-b)/(nx-b)*100),rk=RK[Math.min(4,Math.floor((l-1)/3))],rd=!me.last||Date.now()-me.last>=864e5,sr=!me.spin||Date.now()-me.spin>=864e5,mine=me.pk.map(i=>db.packages.find(p=>p.id==i)).filter(Boolean);
+ return`<div class="w"><div class="card prof"><div class="av">${E(me.u[0].toUpperCase())}</div><div style="flex:1;min-width:200px"><h2 style="margin:0">${E(me.u)} <span class="bd r-epic">${rk}</span></h2><p class="mu" style="margin:4px 0 0">المستوى ${l} • ${me.xp} XP • 🪙 ${me.coins}</p><div class="bar"><i style="width:${pc}%"></i></div></div></div>
+ <div class="g" style="margin-top:16px"><div class="card"><h3>🎁 المكافأة اليومية</h3><p class="mu">سلسلتك: ${me.streak||0} يوم — كل يوم متتالٍ مكافأة أكبر!</p><button onclick="daily()" ${rd?'':'disabled'}>${rd?'استلم الآن':'بعد '+left(me.last)}</button></div>
+ <div class="card"><h3>🎡 عجلة الحظ</h3><div class="wh"><div class="pt"></div><div id="wd">${PZ.map((p,i)=>`<i style="transform:rotate(${i*45+22.5}deg) translateY(-92px)">${p}</i>`).join('')}</div></div><button onclick="spin()" ${sr?'':'disabled'} style="width:100%">${sr?'لُف العجلة':'بعد '+left(me.spin)}</button></div>
+ <div class="card"><h3>🔑 تفعيل مفتاح</h3><p class="mu">+50 عملة و100 XP مع كل مفتاح</p><input id="rk" placeholder="XXXX-XXXX-XXXX-XXXX" style="direction:ltr"><button onclick="redeem()" style="width:100%">تفعيل</button></div></div>
+ <h2 style="margin-top:30px">📦 حزمي</h2><div class="g">${mine.length?mine.map(p=>`<div class="card pk r-${p.rar}"><span class="bd">${RR[p.rar]}</span><h3 style="margin-top:8px">${E(p.name)}</h3></div>`).join(''):'<p class="mu">لا توجد حزم مفعّلة.</p>'}</div>
+ <h2 style="margin-top:30px">🧾 سجل الطلبات</h2><div class="card tb"><table>${me.orders.length?me.orders.slice().reverse().map(o=>`<tr><td>${E(o.n)}</td><td>🪙 ${o.c}</td><td>${E(o.d)}</td></tr>`).join(''):'<tr><td class="mu">لا طلبات بعد</td></tr>'}</table></div></div>`}
+
+
+
+function admin(){if(!me||me.role!='admin')return home();
+ const T=[['st','📊 الإحصائيات'],['pk','📦 الحزم'],['ky','🔑 المفاتيح'],['cp','🏷️ الكوبونات'],['nw','📰 الأخبار'],['us','👥 الأعضاء'],['se','⚙️ الإعدادات']],th=a=>`<div class="card tb"><table><tr>${a.map(x=>`<th>${x}</th>`).join('')}</tr>`;let b='';
+ if(tab=='st'){const ku=db.keys.filter(k=>k.used).length;b=`<div class="g">${[['الأعضاء',db.users.length],['مفاتيح متاحة',db.keys.length-ku],['مفاتيح مستخدمة',ku],['عملات متداولة',db.users.reduce((a,u)=>a+u.coins,0)],['الطلبات',db.users.reduce((a,u)=>a+u.orders.length,0)]].map(([l,v])=>`<div class="card st"><b>${v}</b><span>${l}</span></div>`).join('')}</div>`}
+ if(tab=='pk')b=`<div class="card" style="margin-bottom:16px"><div class="row"><div><label>الاسم</label><input id="pn"></div><div><label>السعر النقدي</label><input id="pp"></div><div><label>السعر بالعملات</label><input id="pc" type="number"></div><div><label>الندرة</label><select id="pr">${Object.keys(RR).map(k=>`<option value="${k}">${RR[k]}</option>`).join('')}</select></div></div><label>المميزات (سطر لكل ميزة)</label><textarea id="pd" rows="3"></textarea><button onclick="addPk()">إضافة حزمة</button></div>`+th(['الحزمة','الندرة','نقدي','عملات',''])+db.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${RR[p.rar]}</td><td>${E(p.price)}</td><td>${p.coins}</td><td><button class="del" onclick="delPk(${p.id})">حذف</button></td></tr>`).join('')+'</table></div>';
+ if(tab=='ky')b=`<div class="card" style="margin-bottom:16px"><div class="row"><div><label>الحزمة</label><select id="kp">${db.packages.map(p=>`<option value="${p.id}">${E(p.name)}</option>`).join('')}</select></div><div><label>العدد (1-50)</label><input id="kn" type="number" value="1" min="1" max="50"></div></div><button onclick="genKeys()">🔑 توليد مفاتيح</button></div>`+th(['المفتاح','الحزمة','الحالة',''])+[...db.keys].reverse().map(k=>`<tr><td><code>${k.k}</code></td><td>${E((db.packages.find(p=>p.id==k.pid)||{name:'محذوفة'}).name)}</td><td>${k.used?`<span class="tag t2">${E(k.used)}</span>`:'<span class="tag t1">متاح</span>'}</td><td><button class="sec" onclick="cop('${k.k}')">نسخ</button> <button class="del" onclick="delKey('${k.k}')">حذف</button></td></tr>`).join('')+'</table></div>';
+ if(tab=='cp')b=`<div class="card" style="margin-bottom:16px"><div class="row"><div><label>الكود</label><input id="cn" style="direction:ltr"></div><div><label>الخصم %</label><input id="cx" type="number" value="10"></div><div><label>عدد الاستخدامات</label><input id="cl" type="number" value="50"></div></div><button onclick="addCp()">إضافة كوبون</button></div>`+th(['الكود','الخصم','المتبقي',''])+db.coupons.map((c,i)=>`<tr><td><code>${E(c.c)}</code></td><td>${c.pct}%</td><td>${c.left}</td><td><button class="del" onclick="adm('cp-del',{i:${i}})">حذف</button></td></tr>`).join('')+'</table></div>';
+ if(tab=='nw')b=`<div class="card" style="margin-bottom:16px"><label>العنوان</label><input id="nt"><label>النص</label><textarea id="nb" rows="3"></textarea><button onclick="addNw()">نشر الخبر</button></div>`+th(['الخبر',''])+db.news.map((n,i)=>`<tr><td>${E(n.t)}</td><td><button class="del" onclick="adm('nw-del',{id:${n.id}})">حذف</button></td></tr>`).join('')+'</table></div>';
+ if(tab=='us')b=th(['العضو','الدور','المستوى','🪙',''])+db.users.map((u,i)=>`<tr><td>${E(u.u)}${u.ban?' 🚫':''}</td><td>${u.role=='admin'?'أدمن':'عضو'}</td><td>${lvl(u)}</td><td>${u.coins}</td><td>${u.u==me.u?'':`<button class="sec" onclick="give('${u.u}')">+🪙</button> <button class="sec" onclick="adm('user-role',{u:'${u.u}'})">رتبة</button> <button class="sec" onclick="adm('user-ban',{u:'${u.u}'})">حظر</button> <button class="del" onclick="delUser('${u.u}')">حذف</button>`}</td></tr>`).join('')+'</table></div>';
+ if(tab=='se'){const s=db.settings;b=`<div class="card"><label>اسم السيرفر</label><input id="sn" value="${E(s.name)}"><div class="row"><div><label>كود cfx.re/join/</label><input id="sc" value="${E(s.cfx)}" style="direction:ltr"></div><div><label>عدد الخانات</label><input id="sl" type="number" value="${s.slots}"></div></div><label>رابط الديسكورد</label><input id="sd" value="${E(s.discord)}" style="direction:ltr"><label>وصف السيرفر</label><textarea id="sx" rows="2">${E(s.desc)}</textarea><label>القوانين (سطر لكل قانون)</label><textarea id="sr" rows="6">${E(s.rules)}</textarea><button onclick="saveSet()">حفظ الإعدادات</button><hr style="border:0;border-top:1px solid var(--ln);margin:18px 0"><label>كلمة مرور جديدة لحسابك</label><input id="np" type="password"><button class="sec" onclick="chPw()">تغيير</button></div>`}
+ return`<div class="w"><h2>⚙️ لوحة الإدارة</h2><div class="tabs">${T.map(([k,v])=>`<button class="${tab==k?'':'sec'}" onclick="tab='${k}';render()">${v}</button>`).join('')}</div>${b}</div>`}
+
+// ====== الاتصال بالخادم (server.js) ======
+// إذا رفعت الواجهة على GitHub Pages والخادم على استضافة أخرى، ضع رابط الخادم هنا، مثال: 'https://my-site.onrender.com'
+const API_URL='';
+let token='';try{token=localStorage.getItem('fv_token')||''}catch(e){}
+db={settings:{name:'سيرفر فايف ام',cfx:'',discord:'#',slots:128,desc:'',rules:''},packages:[],news:[],users:[],keys:[],coupons:[],stats:{users:0,keysUsed:0}};
+async function api(path,body){try{const r=await fetch(API_URL+'/api/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok){toast(d.error||'حدث خطأ');return null}return d}catch(e){toast('تعذر الاتصال بالخادم ⚠️');return null}}
+async function load(){const d=await api('state');if(d){db=d.db;me=d.me}}
+async function act(path,body,msg){const d=await api(path,body);if(!d)return null;await load();if(msg)toast(msg);render();return d}
+const adm=(a,b,m)=>act('admin/'+a,b||{},m||'تم ✅');
+async function doLogin(){const d=await api('login',{u:$('#u').value.trim(),p:$('#p').value});if(!d)return;token=d.token;try{localStorage.setItem('fv_token',token)}catch(e){}await load();toast('أهلاً '+me.u);go(me.role=='admin'?'admin':'account')}
+async function doReg(){if($('#p').value!=$('#p2').value)return toast('كلمتا المرور غير متطابقتين');if(await api('register',{u:$('#u').value.trim(),p:$('#p').value})){toast('تم إنشاء الحساب، سجّل دخولك');go('login')}}
+async function out(){await api('logout',{});token='';try{localStorage.removeItem('fv_token')}catch(e){}me=null;await load();go('home')}
+async function useCp(){const d=await api('coupon',{code:$('#cc').value.trim()});if(d){cpn=d;toast('تم تفعيل الخصم 🎉');render()}}
+async function buy(id){if(!me){toast('سجّل دخولك أولاً');return go('login')}const p=db.packages.find(x=>x.id==id);if(!confirm('شراء '+p.name+'؟'))return;if(await act('buy',{id,coupon:cpn&&cpn.c},'تم الشراء بنجاح 🎉')){cpn=null;render()}}
+const daily=()=>act('daily',{},'🔥 تم استلام المكافأة');
+async function spin(){const d=await api('spin',{});if(!d)return;wr+=2160+((360-(d.i*45+22.5)-wr%360)+360)%360;$('#wd').style.transform=`rotate(${wr}deg)`;setTimeout(async()=>{await load();toast(`🎉 ربحت ${d.prize} عملة!`);render()},4700)}
+const redeem=()=>act('redeem',{k:$('#rk').value.trim()},'تم تفعيل الحزمة ✅');
+const addPk=()=>adm('pk-add',{name:$('#pn').value,price:$('#pp').value,coins:+$('#pc').value,rar:$('#pr').value,perks:$('#pd').value});
+const delPk=id=>confirm('حذف الحزمة؟')&&adm('pk-del',{id});
+const genKeys=()=>adm('keys-gen',{pid:+$('#kp').value,n:+$('#kn').value},'تم توليد المفاتيح 🔑');
+const delKey=k=>adm('key-del',{k});
+const addCp=()=>adm('cp-add',{c:$('#cn').value,pct:+$('#cx').value,left:+$('#cl').value});
+const addNw=()=>adm('nw-add',{t:$('#nt').value,b:$('#nb').value},'تم النشر');
+const give=u=>{const n=+prompt('عدد العملات؟');if(n)adm('user-give',{u,n})};
+const delUser=u=>confirm('حذف العضو؟')&&adm('user-del',{u});
+const saveSet=()=>adm('settings',{name:$('#sn').value,cfx:$('#sc').value,slots:+$('#sl').value,discord:$('#sd').value,desc:$('#sx').value,rules:$('#sr').value},'تم الحفظ');
+const chPw=()=>api('password',{p:$('#np').value}).then(d=>d&&toast('تم تغيير كلمة المرور'));
+async function init(){try{theme(localStorage.getItem('fv2t')||'p')}catch(e){}await load();ol=Math.round(db.settings.slots*.6);fx();render();
+ setInterval(()=>{ol=Math.max(3,Math.min(db.settings.slots,ol+Math.round((Math.random()-.5)*6)));const e=$('#on');if(e)e.textContent=ol},3000)}
+init();

@@ -1,1 +1,1 @@
-{"name":"fivem-store","version":"1.0.0","scripts":{"start":"node server.js"}}
+{"name":"fivem-site","version":"2.0.0","description":"موقع سيرفر فايف ام مع متجر ومفاتيح","main":"server.js","scripts":{"start":"node server.js"},"engines":{"node":">=18"}}
